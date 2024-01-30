@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "notice-telegram"
+version = "0.1.0"
+description = ""
+authors = ["373RN17YK155 <vladislav.burko.worker@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+python-telegram-bot = "^20.7"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
