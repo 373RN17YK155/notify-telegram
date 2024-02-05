@@ -3,126 +3,128 @@
 # This program is dedicated to the public domain under the CC0 license.
 
 """
-First, a few callback functions are defined. Then, those functions are passed to
+Simple Bot to send timed Telegram messages.
+
+This Bot uses the Application class to handle the bot and the JobQueue to send
+timed messages.
+
+First, a few handler functions are defined. Then, those functions are passed to
 the Application and registered at their respective places.
 Then, the bot is started and runs until we press Ctrl-C on the command line.
 
 Usage:
-Example of a bot-user conversation using ConversationHandler.
-Send /start to initiate the conversation.
+Basic Alarm Bot example, sends a message after a set time.
 Press Ctrl-C on the command line or send a signal to the process to stop the
 bot.
+
+Note:
+To use the JobQueue, you must install PTB via
+`pip install "python-telegram-bot[job-queue]"`
 """
 
 import logging
+import sqlite3
+import httpx
+import os
 
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from bs4 import BeautifulSoup
+from telegram import Update
 from telegram.ext import (
-    Application,
-    CommandHandler,
+    Application, 
     ContextTypes,
-    ConversationHandler,
-    MessageHandler,
     filters,
+    CommandHandler,
+    MessageHandler,
+    ConversationHandler,
 )
 
 # Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+
 # set higher logging level for httpx to avoid all GET and POST requests being logged
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-GENDER, PHOTO, LOCATION, BIO = range(4)
+# Define a few command handlers. These usually take the two arguments update and
+# context.
+# Best practice would be to replace context with an underscore,
+# since context is an unused local variable.
+# This being an example and not having context present confusing beginners,
+# we decided to have it present as context.
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends explanation on how to use the bot."""
+    await update.message.reply_text("Hi! Use /set and <cookie> next message to set a timer")
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Starts the conversation and asks the user about their gender."""
-    reply_keyboard = [["Boy", "Girl", "Other"]]
+async def alarm(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the alarm message."""
+    job = context.job
+    URL = "https://cmr24.by/account/search?version=1"
+    headers = {"Cookie": job.data}
 
-    await update.message.reply_text(
-        "Hi! My name is Professor Bot. I will hold a conversation with you. "
-        "Send /cancel to stop talking to me.\n\n"
-        "Are you a boy or a girl?",
-        reply_markup=ReplyKeyboardMarkup(
-            reply_keyboard, one_time_keyboard=True, input_field_placeholder="Boy or Girl?"
-        ),
-    )
+    res = httpx.get(URL, headers=headers)
+    
+    soup = BeautifulSoup(res.text, 'html.parser')
+    list = []
+    inserted = []
 
-    return GENDER
+    for row in soup.find_all("tr", class_="search-table-mobile-size"):
+        list.append(row.get('trid'))
 
+    con = sqlite3.connect("./db.sqlite3")
+    cur = con.cursor()
+    for row in list:
+        cur.execute("INSERT OR IGNORE INTO trid VALUES(?) RETURNING id", (row,))
+        res = cur.fetchone()
+        if res:
+            inserted.append(res)
 
-async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the selected gender and asks for a photo."""
-    user = update.message.from_user
-    logger.info("Gender of %s: %s", user.first_name, update.message.text)
-    await update.message.reply_text(
-        "I see! Please send me a photo of yourself, "
-        "so I know what you look like, or send /skip if you don't want to.",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    con.commit()
+    con.close()
 
-    return PHOTO
+    logger.info(inserted)
 
-
-async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the photo and asks for a location."""
-    user = update.message.from_user
-    photo_file = await update.message.photo[-1].get_file()
-    await photo_file.download_to_drive("user_photo.jpg")
-    logger.info("Photo of %s: %s", user.first_name, "user_photo.jpg")
-    await update.message.reply_text(
-        "Gorgeous! Now, send me your location please, or send /skip if you don't want to."
-    )
-
-    return LOCATION
+    if len(inserted):
+        await context.bot.send_message(job.chat_id, text=f"Beep! check your list!")
 
 
-async def skip_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Skips the photo and asks for a location."""
-    user = update.message.from_user
-    logger.info("User %s did not send a photo.", user.first_name)
-    await update.message.reply_text(
-        "I bet you look great! Now, send me your location please, or send /skip."
-    )
-
-    return LOCATION
-
-
-async def location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the location and asks for some info about the user."""
-    user = update.message.from_user
-    user_location = update.message.location
-    logger.info(
-        "Location of %s: %f / %f", user.first_name, user_location.latitude, user_location.longitude
-    )
-    await update.message.reply_text(
-        "Maybe I can visit you sometime! At last, tell me something about yourself."
-    )
-
-    return BIO
+def remove_job_if_exists(name: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Remove job with given name. Returns whether job was removed."""
+    current_jobs = context.job_queue.get_jobs_by_name(name)
+    if not current_jobs:
+        return False
+    for job in current_jobs:
+        job.schedule_removal()
+    return True
 
 
-async def skip_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Skips the location and asks for info about the user."""
-    user = update.message.from_user
-    logger.info("User %s did not send a location.", user.first_name)
-    await update.message.reply_text(
-        "You seem a bit paranoid! At last, tell me something about yourself."
-    )
+async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point."""
 
-    return BIO
+    return 0
 
 
-async def bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the info about the user and ends the conversation."""
-    user = update.message.from_user
-    logger.info("Bio of %s: %s", user.first_name, update.message.text)
-    await update.message.reply_text("Thank you! I hope we can talk again some day.")
+async def create_job(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add a job to the queue."""
+    chat_id = update.effective_message.chat_id
 
+    job_removed = remove_job_if_exists(str(chat_id), context)
+    context.job_queue.run_repeating(alarm, 30, chat_id=chat_id, name=str(chat_id), data=update.message.text)
+
+    await update.effective_message.reply_text("""job successfully created.""")
+    
     return ConversationHandler.END
+
+
+async def unset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove the job if the user changed their mind."""
+    chat_id = update.message.chat_id
+    job_removed = remove_job_if_exists(str(chat_id), context)
+    text = "Timer successfully cancelled!" if job_removed else "You have no active timer."
+    await update.message.reply_text(text)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -137,30 +139,37 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def main() -> None:
-    """Run the bot."""
+    """Run bot."""
     # Create the Application and pass it your bot's token.
-    application = Application.builder().token("TOKEN").build()
+    application = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
 
     # Add conversation handler with the states GENDER, PHOTO, LOCATION and BIO
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CommandHandler("set", set_timer)],
         states={
-            GENDER: [MessageHandler(filters.Regex("^(Boy|Girl|Other)$"), gender)],
-            PHOTO: [MessageHandler(filters.PHOTO, photo), CommandHandler("skip", skip_photo)],
-            LOCATION: [
-                MessageHandler(filters.LOCATION, location),
-                CommandHandler("skip", skip_location),
-            ],
-            BIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio)],
+            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_job)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    # on different commands - answer in Telegram
+    application.add_handler(CommandHandler(["start", "help"], start))
     application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("unset", unset))
 
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
+def initDB() -> None:
+    con = sqlite3.connect("./db.sqlite3")
+    cur = con.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS trid(id INTEGER PRIMARY KEY)")
+    con.commit()
+    con.close()
+ 
+
+
 if __name__ == "__main__":
+    initDB()
     main()

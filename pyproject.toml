@@ -6,7 +6,7 @@ authors = ["373RN17YK155 <vladislav.burko.worker@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "^3.11"
 python-telegram-bot = "^20.7"
 beautifulsoup4 = "^4.12.3"
 
