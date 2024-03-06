@@ -3,54 +3,92 @@
 # This program is dedicated to the public domain under the CC0 license.
 
 """
-First, a few callback functions are defined. Then, those functions are passed to
+Simple Bot to send timed Telegram messages.
+
+This Bot uses the Application class to handle the bot and the JobQueue to send
+timed messages.
+
+First, a few handler functions are defined. Then, those functions are passed to
 the Application and registered at their respective places.
 Then, the bot is started and runs until we press Ctrl-C on the command line.
 
 Usage:
-Example of a bot-user conversation using ConversationHandler.
-Send /start to initiate the conversation.
+Basic Alarm Bot example, sends a message after a set time.
 Press Ctrl-C on the command line or send a signal to the process to stop the
 bot.
+
+Note:
+To use the JobQueue, you must install PTB via
+`pip install "python-telegram-bot[job-queue]"`
 """
 
 import logging
-import os
 import sqlite3
+import httpx
+import os
 
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from bs4 import BeautifulSoup
+from telegram import Update
 from telegram.ext import (
-    Application,
-    CommandHandler,
+    Application, 
     ContextTypes,
-    ConversationHandler,
-    MessageHandler,
     filters,
+    CommandHandler,
+    MessageHandler,
+    ConversationHandler,
 )
-
-# Env 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+
 # set higher logging level for httpx to avoid all GET and POST requests being logged
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-SUBSCRIBE = 0
-
+# Define a few command handlers. These usually take the two arguments update and
+# context.
+# Best practice would be to replace context with an underscore,
+# since context is an unused local variable.
+# This being an example and not having context present confusing beginners,
+# we decided to have it present as context.
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends explanation on how to use the bot."""
-    await update.message.reply_text("Hi! Use /set <seconds> to set a timer")
+    await update.message.reply_text("Hi! Use /set and <cookie> next message to set a timer")
 
 
 async def alarm(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send the alarm message."""
     job = context.job
-    await context.bot.send_message(job.chat_id, text=f"Beep! {job.data} seconds are over!")
+    URL = "https://cmr24.by/account/search?version=1"
+    headers = {"Cookie": job.data}
+
+    res = httpx.get(URL, headers=headers)
+    
+    soup = BeautifulSoup(res.text, 'html.parser')
+    list = []
+    inserted = []
+
+    for row in soup.find_all("tr", class_="search-table-mobile-size"):
+        list.append(row.get('trid'))
+
+    con = sqlite3.connect("./db.sqlite3")
+    cur = con.cursor()
+    for row in list:
+        cur.execute("INSERT OR IGNORE INTO trid VALUES(?) RETURNING id", (row,))
+        res = cur.fetchone()
+        if res:
+            inserted.append(res)
+
+    con.commit()
+    con.close()
+
+    logger.info(inserted)
+
+    if len(inserted):
+        await context.bot.send_message(job.chat_id, text=f"Beep! check your list!")
 
 
 def remove_job_if_exists(name: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -63,26 +101,22 @@ def remove_job_if_exists(name: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return True
 
 
-async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point."""
+
+    return 0
+
+
+async def create_job(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Add a job to the queue."""
     chat_id = update.effective_message.chat_id
-    try:
-        # args[0] should contain the time for the timer in seconds
-        due = float(context.args[0])
-        if due < 0:
-            await update.effective_message.reply_text("Sorry we can not go back to future!")
-            return
 
-        job_removed = remove_job_if_exists(str(chat_id), context)
-        context.job_queue.run_once(alarm, due, chat_id=chat_id, name=str(chat_id), data=due)
+    job_removed = remove_job_if_exists(str(chat_id), context)
+    context.job_queue.run_repeating(alarm, 30, chat_id=chat_id, name=str(chat_id), data=update.message.text)
 
-        text = "Timer successfully set!"
-        if job_removed:
-            text += " Old one was removed."
-        await update.effective_message.reply_text(text)
-
-    except (IndexError, ValueError):
-        await update.effective_message.reply_text("Usage: /set <seconds>")
+    await update.effective_message.reply_text("""job successfully created.""")
+    
+    return ConversationHandler.END
 
 
 async def unset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -93,56 +127,49 @@ async def unset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(text)
 
 
-async def make_sub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Make subscribtion on search"""
-    await update.message.reply_text(
-        "Hi! Insert cookie for make query\n"
-        "Send /cancel to stop action."
-    )
-    return SUBSCRIBE
-
-
-async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Make subscribtion on search"""
-    user = update.message.from_user
-    cookie = update.message.text 
-
-    con = sqlite3.connect("./db.sqlite3")
-    cur = con.cursor()
-    
-    data = ({"cookie"})
-    cur.execute("INSERT INTO subscribtion VALUES(:cookie)", data)
-    con.commit()  # Remember to commit thetransaction after executing INSERT.
-
-    return ConversationHandler.END
-
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels from conversation handler."""
+    """Cancels and ends the conversation."""
+    user = update.message.from_user
+    logger.info("User %s canceled the conversation.", user.first_name)
+    await update.message.reply_text(
+        "Bye! I hope we can talk again some day.", reply_markup=ReplyKeyboardRemove()
+    )
 
     return ConversationHandler.END
+
 
 def main() -> None:
-    """Run the bot."""
+    """Run bot."""
     # Create the Application and pass it your bot's token.
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
 
     # Add conversation handler with the states GENDER, PHOTO, LOCATION and BIO
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("set", set_timer)],
+        states={
+            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_job)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # on different commands - answer in Telegram
     application.add_handler(CommandHandler(["start", "help"], start))
-    application.add_handler(CommandHandler("set", set_timer))
+    application.add_handler(conv_handler)
     application.add_handler(CommandHandler("unset", unset))
-    application.add_handler(
-        ConversationHandler(
-            entry_points=[CommandHandler("subscribe", make_sub)],
-            states={
-                SUBSCRIBE:[
-                    MessageHandler(filters.TEXT & ~filters.COMMAND,subscribe),
-                ],
-            },
-            fallbacks=[CommandHandler("cancel", cancel)],
-        )
-    ) # Run the bot until the user presses Ctrl-C
+
+    # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+
+def initDB() -> None:
+    con = sqlite3.connect("./db.sqlite3")
+    cur = con.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS trid(id INTEGER PRIMARY KEY)")
+    con.commit()
+    con.close()
+ 
+
+
 if __name__ == "__main__":
+    initDB()
     main()

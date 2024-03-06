@@ -1,12 +1,12 @@
 create table subscribtion(
-  id INTEGER PRIMARY KEY,
+  id TEXT PRIMARY KEY,
+  chatId TEXT,
   cookie TEXT,
-  isRuning BOOLEAN
 );
 
 
 create table relatedTravel(
   id INTEGER PRIMARY KEY,
-  subscribtionId INTEGER,
+  subscribtionId TEXT,
   FOREIGN KEY(subscribtionId) REFERENCES subscribtion(id)
 ); 
