@@ -2,11 +2,7 @@
 meta:
   environment: python
   toolchain:
-    name: pip
-    version: 3.8
-build:
-  requirementsPath: requirements.txt
+    name: poetry
+    version: 3.12
 run:
-  scriptName: app.py
-  persistenceMount: /data
-  containerPort: 80
+  scriptName: main.py
