@@ -1,1 +1,1 @@
-Телеграмм бот для :q
+## Notification bot for parsing new ads from site:
