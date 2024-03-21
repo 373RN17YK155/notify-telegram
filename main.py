@@ -1,12 +1,69 @@
+#!/usr/bin/env python
+# pylint: disable=unused-argument
+# This program is dedicated to the public domain under the CC0 license.
+
+"""
+Simple Bot to send timed Telegram messages.
+
+This Bot uses the Application class to handle the bot and the JobQueue to send
+timed messages.
+
+First, a few handler functions are defined. Then, those functions are passed to
+the Application and registered at their respective places.
+Then, the bot is started and runs until we press Ctrl-C on the command line.
+
+Usage:
+Basic Alarm Bot example, sends a message after a set time.
+Press Ctrl-C on the command line or send a signal to the process to stop the
+bot.
+
+Note:
+To use the JobQueue, you must install PTB via
+`pip install "python-telegram-bot[job-queue]"`
+"""
+
+import logging
 import sqlite3
 import httpx
-from bs4 import BeautifulSoup
+import os
 
-def main() -> None:
+from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.ext import (
+    Application, 
+    ContextTypes,
+    filters,
+    CommandHandler,
+    MessageHandler,
+    ConversationHandler,
+)
+
+# Enable logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+
+# set higher logging level for httpx to avoid all GET and POST requests being logged
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
+# Define a few command handlers. These usually take the two arguments update and
+# context.
+# Best practice would be to replace context with an underscore,
+# since context is an unused local variable.
+# This being an example and not having context present confusing beginners,
+# we decided to have it present as context.
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends explanation on how to use the bot."""
+    await update.message.reply_text("Hi! Use /set and <cookie> next message to set a timer")
+
+
+async def alarm(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the alarm message."""
+    job = context.job
     URL = "https://cmr24.by/account/search?version=1"
-    COOKIES = "advanced-frontend=e3122e454e9fb4cc4b9062f0ae22de97; _csrf=7410079a4b294a254211144664a11e8faba3cee9c4fee25d31105cdba825bc13a%3A2%3A%7Bi%3A0%3Bs%3A5%3A%22_csrf%22%3Bi%3A1%3Bs%3A32%3A%22TVq88t1o3338RmUrZjOL6YanyHUrzkwg%22%3B%7D; _ym_uid=1706618631395660289; _ym_d=1706618631; _fbp=fb.1.1706618630689.400408766; _gcl_au=1.1.2024325695.1706618631; _ga=GA1.2.1989610241.1706618631; _ga_N2ZWBFJ02B=GS1.1.1707321939.4.0.1707321939.60.0.0; SearchForm=529b578e43deae05e08edd05b05114138a3e2028ba1ca73f23bd940da4092e25a%3A2%3A%7Bi%3A0%3Bs%3A10%3A%22SearchForm%22%3Bi%3A1%3Bs%3A336%3A%22%7B%221%22%3A%7B%22Type%22%3A0%2C%22cityFrom%22%3A282%2C%22cityTo%22%3A538%2C%22regionFrom%22%3A%5B%221602269%22%5D%2C%22regionTo%22%3A%5B%221600001%22%5D%2C%22countryFrom%22%3A3%2C%22countryTo%22%3A3%2C%22dateFrom%22%3A%2208.02.2024%22%2C%22dateTo%22%3A%2212.01.2024%22%2C%22Weight%22%3A%7B%22from%22%3A%22%22%2C%22to%22%3A10%7D%2C%22Volume%22%3A%7B%22from%22%3A%22%22%2C%22to%22%3A%22%22%7D%2C%22FilterType%22%3A%22%22%2C%22idBodytype%22%3A%220%22%2C%22emptyRouteText%22%3A%22%22%2C%22UserType%22%3A0%2C%22LoadType%22%3A%22-1%22%7D%2C%222%22%3A%5B%5D%2C%223%22%3A%5B%5D%2C%224%22%3A%5B%5D%2C%225%22%3A%5B%5D%7D%22%3B%7D"
-    
-    headers = {"Cookie": COOKIES}
+    headers = {"Cookie": job.data}
 
     res = httpx.get(URL, headers=headers)
     
@@ -17,27 +74,103 @@ def main() -> None:
     for row in soup.find_all("tr", class_="search-table-mobile-size"):
         list.append(row.get('trid'))
 
-    con = sqlite3.connect("./notice_telegram/db.sqlite3")
+    con = sqlite3.connect("./db.sqlite3")
     cur = con.cursor()
     for row in list:
         cur.execute("INSERT OR IGNORE INTO trid VALUES(?) RETURNING id", (row,))
         res = cur.fetchone()
         if res:
             inserted.append(res)
+
     con.commit()
     con.close()
 
+    logger.info(inserted)
 
-    print(inserted)
+    if len(inserted):
+        await context.bot.send_message(job.chat_id, text=f"Beep! check your list!")
 
-if __name__ == "__main__":
-    con = sqlite3.connect("./notice_telegram/db.sqlite3")
+
+def remove_job_if_exists(name: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Remove job with given name. Returns whether job was removed."""
+    current_jobs = context.job_queue.get_jobs_by_name(name)
+    if not current_jobs:
+        return False
+    for job in current_jobs:
+        job.schedule_removal()
+    return True
+
+
+async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point."""
+
+    return 0
+
+
+async def create_job(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add a job to the queue."""
+    chat_id = update.effective_message.chat_id
+
+    job_removed = remove_job_if_exists(str(chat_id), context)
+    context.job_queue.run_repeating(alarm, 30, chat_id=chat_id, name=str(chat_id), data=update.message.text)
+
+    await update.effective_message.reply_text("""job successfully created.""")
+    
+    return ConversationHandler.END
+
+
+async def unset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove the job if the user changed their mind."""
+    chat_id = update.message.chat_id
+    job_removed = remove_job_if_exists(str(chat_id), context)
+    text = "Timer successfully cancelled!" if job_removed else "You have no active timer."
+    await update.message.reply_text(text)
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancels and ends the conversation."""
+    user = update.message.from_user
+    logger.info("User %s canceled the conversation.", user.first_name)
+    await update.message.reply_text(
+        "Bye! I hope we can talk again some day.", reply_markup=ReplyKeyboardRemove()
+    )
+
+    return ConversationHandler.END
+
+
+def main() -> None:
+    """Run bot."""
+    # Create the Application and pass it your bot's token.
+    application = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+
+    # Add conversation handler with the states GENDER, PHOTO, LOCATION and BIO
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("set", set_timer)],
+        states={
+            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_job)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # on different commands - answer in Telegram
+    application.add_handler(CommandHandler(["start", "help"], start))
+    application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("unset", unset))
+
+    # Run the bot until the user presses Ctrl-C
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+def initDB() -> None:
+    con = sqlite3.connect("./db.sqlite3")
     cur = con.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS trid(id INTEGER PRIMARY KEY)")
     con.commit()
     con.close()
+ 
 
 
-    main()
+if __name__ == "__main__":
+    initDB()
     main()
 

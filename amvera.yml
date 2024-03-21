@@ -1,0 +1,8 @@
+---
+meta:
+  environment: python
+  toolchain:
+    name: poetry
+    version: 3.12
+run:
+  scriptName: main.py
